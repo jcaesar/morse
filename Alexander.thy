@@ -85,6 +85,13 @@ definition Alexander_dual
   where "Alexander_dual s = 
             {v. \<exists>x. v = simplex_complement x \<and> x \<in> nofaces_simplicial_complex s}"
 
+(* I think we have very different notions of what to consider a "natural" definition *)
+(* Just testing my understanding. *)
+lemma nofaces_simplicial_complex_alt: "nofaces_simplicial_complex s = simplices - s"
+  unfolding nofaces_simplicial_complex_def by blast
+lemma Alexander_dual_alt: "Alexander_dual s = simplex_complement ` nofaces_simplicial_complex s"
+  unfolding Alexander_dual_def by blast
+  
 lemma Alexander_dual_empty: "Alexander_dual {} = Pow {..<n}"
   unfolding Alexander_dual_def
   unfolding nofaces_simplicial_complex_def
@@ -253,6 +260,15 @@ proof (unfold monotone_bool_fun_def, unfold mono_on_def, intro allI, safe)
   show "Alexander_dual f r \<le> Alexander_dual f s"
     unfolding Alexander_dual_def using not_antimono [OF f ns nr ns_le_nr] by simp
 qed
+
+(* just for fun *)
+lemma not_roundtrips:
+  "not (not s) = s"
+  unfolding not_def by auto
+lemma Alexander_dual_roundtrips:
+  "Alexander_dual (Alexander_dual f) = f"
+  unfolding Alexander_dual_def not_roundtrips
+  by simp
 
 end
 

@@ -32,7 +32,7 @@ text\<open>For any Boolean function in dimension @{term n},
 
 lemma mk_ifex_boolean_function: 
   fixes f :: "bool vec => bool"
-  shows "ro_ifex (mk_ifex (vec_to_boolfunc n f) [0..n])"
+  shows "ro_ifex (mk_ifex (vec_to_boolfunc n f) [0..<n])"
   using mk_ifex_ro by fast
 
 text\<open>Any Boolean function in dimension @{term n} can be 
@@ -44,7 +44,7 @@ lemma
   shows "reads_inside_set (vec_to_boolfunc n f) {..<n}"
   unfolding vec_to_boolfunc_def
   unfolding reads_inside_set_def
-  by (smt (verit, best) dim_vec eq_vecI index_vec lessThan_iff)
+  by (simp add: mk_vec_def vec_def)
 
 text\<open>Any Boolean function of a finite dimension
   is equal to its ifex representation
@@ -53,7 +53,7 @@ text\<open>Any Boolean function of a finite dimension
 lemma
   mk_ifex_equivalence:
   fixes f :: "bool vec => bool"
-  shows "val_ifex (mk_ifex (vec_to_boolfunc n f) [0..n])
+  shows "val_ifex (mk_ifex (vec_to_boolfunc n f) [0..<n])
     = vec_to_boolfunc n f"
   apply (rule ext)
   apply (rule val_ifex_mk_ifex_equal)
@@ -87,15 +87,15 @@ fun height :: "'a ifex => nat"
 
 text\<open>Both @{term mk_ifex} and @{term height} can be used in computations.\<close>
 
-lemma "height (mk_ifex (vec_to_boolfunc 4 bool_fun_threshold_2_3) [0..4]) = 4"
+lemma "height (mk_ifex (vec_to_boolfunc 4 bool_fun_threshold_2_3) [0..<4]) = 4"
   by eval
 
 lemma "height (mk_ifex (vec_to_boolfunc 4 
-        (boolean_functions.Alexander_dual bool_fun_threshold_2_3)) [0..4]) = 4"
+        (boolean_functions.Alexander_dual bool_fun_threshold_2_3)) [0..<4]) = 4"
   by eval
 
-lemma "height (mk_ifex (vec_to_boolfunc 4 bool_fun_threshold_2_3) [0..4]) = 
-  height (mk_ifex (vec_to_boolfunc 4 (boolean_functions.Alexander_dual bool_fun_threshold_2_3)) [0..4])"
+lemma "height (mk_ifex (vec_to_boolfunc 4 bool_fun_threshold_2_3) [0..<4]) = 
+  height (mk_ifex (vec_to_boolfunc 4 (boolean_functions.Alexander_dual bool_fun_threshold_2_3)) [0..<4])"
   by eval
 
 (*lemma "height (mk_ifex (boolfunc_threshold_2_3) [0,1,2,3]) = 4"
@@ -215,11 +215,146 @@ text\<open>Now we introduce the definition of evasive Boolean function.
   The definition is inspired by the one by Scoville~\cite[Ex. 6.19]{SC19}.\<close>
 
 definition evasive :: "nat => (bool vec => bool) => bool"
-  where "evasive n f \<equiv> (height (mk_ifex (vec_to_boolfunc n f) [0..n])) = n"
+  where "evasive n f \<equiv> (height (mk_ifex (vec_to_boolfunc n f) [0..<n])) = n"
 
+(* Uff, I completely misunderstood the 
+"An evasive boolean function will satisfy that the height of a corresponding BDD is equal to the number of its vertices"
+I thought that meant "equal to the number of vertices (=graph-nodes) of the bdd", like this:
+ *)
+primrec ifex_vertices where
+"ifex_vertices Falseif = 0" |
+"ifex_vertices Trueif = 0" |
+"ifex_vertices (IF _ t e) = Suc (ifex_vertices t + ifex_vertices e)" 
+fun wrong_evasive where
+"wrong_evasive Falseif = True" |
+"wrong_evasive Trueif = True" |
+"wrong_evasive (IF _ t Falseif) = wrong_evasive t" |
+"wrong_evasive (IF _ t Trueif) = wrong_evasive t" |
+"wrong_evasive (IF _ Falseif e) = wrong_evasive e" |
+"wrong_evasive (IF _ Trueif e) = wrong_evasive e" |
+"wrong_evasive (IF _ (IF _ _ _) (IF _ _ _)) = False"
+lemma height_le_vertices: "height f \<le> ifex_vertices f"
+  by(induction f; simp)
+(* this is what I thought evasive was: *)
+lemma wrong_evasive_alt: "wrong_evasive f = (height f = ifex_vertices f)"
+  by(induction f rule: wrong_evasive.induct; simp add: max_def; metis Suc_n_not_le_n height_le_vertices trans_le_add1 trans_le_add2)
+
+(* I haven't understood well what evasive means.. essentially, there must be one path through
+the bdd where every variable matters *)
+definition "someifex \<equiv> (IF (0 :: nat) (IF 1 Trueif Falseif) (IF 2 Falseif Trueif))"
+lemma "height someifex = 2" "ro_ifex someifex"
+  by eval eval
+(*
+012 V
+FFF T
+FFT F
+FTF T
+FTT F
+TFF F
+TFT F
+TTF T
+TTT T
+*)
+(* you know what confuses me about evasiveness? The height of a bdd is dependend on the atom order.
+I don't see how it makes sense for a property of a boolean function to depend on some arbitrary ordering of the atoms it uses.
+I can't really demonstrate changing the order, but I can demonstrate that the height changes if we rename an atom. *)
+
+(* bit complicated.. would probably have been easier to just reuse mk_ifex *)
+function ifex_mkro where
+"ifex_mkro Falseif = Falseif" |
+"ifex_mkro Trueif = Trueif" |
+"ifex_mkro (IF v t e) = ifex_ite (IF v Trueif Falseif) (ifex_mkro (restrict t v True)) (ifex_mkro (restrict e v False))"
+  by pat_completeness auto
+termination ifex_mkro
+  by (relation "measure (\<lambda>f. card (ifex_var_set f))", rule wf_measure, unfold in_measure) 
+     (rule psubset_card_mono; simp; metis Un_commute Un_insert_right dual_order.refl insert_subset less_supI1 not_element_restrict psubsetI restrict_variables_subset)+
+lemma finite_psubset_induct_my: "finite A \<Longrightarrow> (\<And>A. finite A \<Longrightarrow> (\<And>B. B \<subset> A \<Longrightarrow> P B) \<Longrightarrow> P A) \<Longrightarrow> P A"
+  (* todo: understand why the original isn't usable.. *)
+  using finite_psubset_induct by blast
+lemma ifex_var_set_restrict_ihhelp:
+  "f = IF v t e \<Longrightarrow> r = t \<or> r = e \<Longrightarrow> ifex_var_set (BDT.restrict r v x) \<subset> ifex_var_set f"
+  using not_element_restrict restrict_variables_subset by fastforce
+ 
+lemma ro_ifex_mkro[simp,intro!]: "ro_ifex (ifex_mkro f)"
+proof(induction "ifex_var_set f" arbitrary: f rule: finite_psubset_induct_my)
+  case (2 f)
+  then show ?case
+  proof(cases f)
+    case (IF v t e)
+    have "ro_ifex (ifex_mkro (BDT.restrict t v True))"
+         "ro_ifex (ifex_mkro (BDT.restrict e v False))"
+      by (metis "2.hyps"(2) IF ifex_var_set_restrict_ihhelp)+
+    thus ?thesis 
+      by(force simp del: ifex_ite.simps simp add: IF intro!: minimal_ifex_ite_invar order_ifex_ite_invar)
+  qed simp_all
+qed simp
+
+lemma val_ifex_mkro[simp]: "val_ifex (ifex_mkro f) = val_ifex f"
+proof(induction "ifex_var_set f" arbitrary: f rule: finite_psubset_induct_my)
+  case (2 f)
+  then show ?case
+  proof(cases f)
+    case (IF v t e)
+    have "val_ifex (ifex_mkro (BDT.restrict t v True)) = val_ifex (BDT.restrict t v True)"
+         "val_ifex (ifex_mkro (BDT.restrict e v False)) = val_ifex (BDT.restrict e v False)"
+      by (metis "2.hyps"(2) IF ifex_var_set_restrict_ihhelp)+
+    with IF show ?thesis 
+      apply(simp del: ifex_ite.simps)
+      apply(subst val_ifex_ite_subst; (simp; fail)?)
+      apply(simp add: bf_ite_def)
+      apply(rule ext)
+      apply(simp add: restrict_assignment[symmetric] fun_upd_idem)
+      done
+  qed simp_all
+qed simp
+
+definition "ifex_rename from to f \<equiv> ifex_ite (IF to Trueif Falseif) (ifex_mkro (restrict f from True)) (ifex_mkro (restrict f from False))" 
+lemma rename_removes: "a \<noteq> b \<Longrightarrow> a \<notin> ifex_var_set (ifex_rename a b f)"
+  apply (auto dest!: ifex_vars_subset simp del: ifex_ite.simps simp add: not_element_restrict ifex_rename_def)
+  oops
+
+lemma val_ifex_rename: " val_ifex (ifex_rename a b f) assmt = val_ifex f (assmt(a := assmt b))"
+  apply (clarsimp simp del: ifex_ite.simps simp add: not_element_restrict ifex_rename_def)
+  apply(subst val_ifex_ite_subst)
+     apply(simp;fail)
+    apply(simp add: ro_ifex_mkro;fail)
+   apply(simp add: ro_ifex_mkro;fail)
+  apply(simp add: bf_ite_def restrict_assignment[symmetric])
+  done
+(* end of complicated stuff *)
+
+(* cant change the order, can rename 0 to 3.
+   result: height changes from 2 to 3
+ *)
+lemma "height (ifex_rename 0 3 someifex) = 3" by eval
+value "ifex_rename 0 3 someifex"
+
+
+lemma "ro_ifex (IF (0 :: nat) (If 1 Trueif Falseif) (IF 2 Falseif Trueif))"
+  by eval
+lemma assumes "ro_ifex f" shows "height f \<le> card (ifex_var_set f)"
+proof -
+  have "ro_ifex f \<Longrightarrow> n = height f \<Longrightarrow> n \<le> card (ifex_var_set f)" for n
+  proof(induction n arbitrary: f)
+    case 0
+    then show ?case by(cases f; simp)
+  next
+    case (Suc n)
+    obtain i t e where ite: "f = IF i t e" using Suc.prems(2) by(cases f; simp) 
+    hence "i \<notin> (ifex_var_set t \<union> ifex_var_set e)" using Suc.prems(1) by auto
+    hence sc[simp]: "card (insert i (ifex_var_set t \<union> ifex_var_set e)) = Suc (card (ifex_var_set t \<union> ifex_var_set e))"
+      by simp
+    show ?case using Suc.prems Suc.IH[of t] Suc.IH[of e] unfolding ite
+      apply(cases "height t \<le> height e")
+      subgoal by (simp; meson List.finite_set Un_upper2 card_mono finite_Un order_trans)
+      subgoal by (simp; meson List.finite_set card_mono finite_Un order_trans sup_ge1)
+      done
+  qed
+  thus ?thesis using assms by meson
+qed
 
 (*definition evasive :: "nat => ((nat => bool) => bool) => bool"
-  where "evasive n f \<equiv> (height (mk_ifex f [0..n])) = n"*)
+  where "evasive n f \<equiv> (height (mk_ifex f [0..<n])) = n"*)
 
 (*corollary "evasive 4 boolfunc_threshold_2_3" by eval*)
 
@@ -246,11 +381,73 @@ section\<open>The @{term boolean_functions.Alexander_dual} and @{typ "'a ifex"}\
 context boolean_functions
 begin
 
+                           
+(* I don't really see why this should hold without the this_doesnt_hold *)
 lemma 
   assumes "monotone_bool_fun f"
-  shows "mk_ifex (vec_to_boolfunc n f) [0..n] 
-        = mk_ifex (vec_to_boolfunc n (Alexander_dual f)) [0..n]"
-  sorry
+  assumes this_doesnt_hold: "vec_to_boolfunc n f = vec_to_boolfunc n (Alexander_dual f)"
+  shows "mk_ifex (vec_to_boolfunc n f) [0..<n] 
+        = mk_ifex (vec_to_boolfunc n (Alexander_dual f)) [0..<n]"
+  using this_doesnt_hold by presburger
+(* If the reason this should hold is somehow hidden in monotone, I lack the insight. *)
+(* Given that the following lemma fails quickcheck, I don't think it is\<dots> *)
+lemma "mono f \<Longrightarrow> (\<not> f (\<lambda>i. \<not> as i)) = f as"
+  oops
+
+primrec ifex_alexander_dual where
+"ifex_alexander_dual Falseif = Trueif" |
+"ifex_alexander_dual Trueif = Falseif" |
+"ifex_alexander_dual (IF i t e) = (IF i (ifex_alexander_dual e) (ifex_alexander_dual t))"
+
+(* Or are you maybe looking for something like this? *)
+lemma "ifex_alexander_dual (mk_ifex (vec_to_boolfunc n f) [0..<n])
+  = mk_ifex (vec_to_boolfunc n (Alexander_dual f)) [0..<n]"
+(* but that's trivial, isn't it? *)
+proof -
+
+  have ifex_alexander_dual_varset: "ifex_var_set (ifex_alexander_dual f2) = ifex_var_set f2" for f2
+    by(induction f2) auto
+
+  have ifex_alexander_dual_inj: "ifex_alexander_dual f2 = ifex_alexander_dual f1 \<Longrightarrow> f1 = f2" for f1 f2
+    apply(induction f1 arbitrary: f2)
+    subgoal for f2 by(cases f2; simp)
+    subgoal for f2 by(cases f2; simp)
+    subgoal for i t e f2 by(cases f2; simp)
+    done
+    
+  have ifex_alexander_dual_ro: "ro_ifex f \<Longrightarrow> ro_ifex (ifex_alexander_dual f)" for f
+    apply(induction f; (simp; fail)?)
+    apply(simp split: ifex.splits add: ifex_alexander_dual_varset)
+    apply(blast dest: ifex_alexander_dual_inj)
+    done
+
+  have val_ifex_alexander_dual: "val_ifex (ifex_alexander_dual f) assmt
+    = (\<not> val_ifex f (\<lambda>i. \<not>assmt i))" for f assmt
+    by(induction f; simp)
+
+  have ifex_alexander_dual: "reads_inside_set f (set vs) \<Longrightarrow> ifex_alexander_dual (mk_ifex f vs)
+    = mk_ifex (\<lambda>asmmt. \<not>f (\<lambda>i. \<not>asmmt i)) vs" for f vs
+    apply(rule ro_ifex_unique)
+      subgoal using ifex_alexander_dual_ro mk_ifex_ro by blast
+     subgoal using mk_ifex_ro by blast
+     apply(subst val_ifex_mk_ifex_equal)
+      apply(simp add: reads_inside_set_def; fail)
+     apply(subst val_ifex_alexander_dual)
+     apply(subst val_ifex_mk_ifex_equal)
+     subgoal .
+     ..
+
+   have foo: "(\<lambda>assmt. \<not> f (vec n (\<lambda>i. \<not> assmt i))) = (\<lambda>assmt. \<not> f (vec n (\<lambda>na. \<not> vec n assmt $ na)))"
+     by (rule ext; smt (verit, ccfv_threshold) dim_vec eq_vecI index_vec)
+  
+  show ?thesis
+    apply(subst ifex_alexander_dual)
+     (* hgn, reads_inside_set_boolean_function is phrased just a little bit wrong for this *)
+     thm reads_inside_set_boolean_function
+     subgoal by(simp add: vec_to_boolfunc_def reads_inside_set_def mk_vec_def vec_def)
+     subgoal by(simp add: vec_to_boolfunc_def Alexander_dual_def not_def foo)
+    done
+qed
 
 end
 
