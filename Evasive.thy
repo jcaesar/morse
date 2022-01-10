@@ -241,7 +241,7 @@ definition "Mieser \<equiv> (IF 0 (IF 2 (IF 1 Trueif Falseif) (IF 3 Trueif False
 lemma "val_ifex Mieser = mieser" by(rule ext; simp add: Mieser_def mieser_def)
 (* Our manually constructed optimal BDT has height 3 *)
 lemma "height Mieser = 3" by(simp add: Mieser_def)
-(* But be careful: This lemma might read to you as "any reduced ordered bdt has height 4"
+(* But be careful: This next lemma might read to you as "any reduced ordered bdt has height 4"
    But this is only for the one fixed variable order given by nats
    You'll have to manually convince yourself that this holds true even if e.g. 2 < 1.
  *)
@@ -258,8 +258,11 @@ proof -
 qed
 
 
-definition bf_evasive_on :: "'a boolfunc \<Rightarrow> 'a set \<Rightarrow> bool"
-  where "bf_evasive_on f vs \<equiv> (\<exists>assmt. \<forall>update \<in> vs. f assmt \<noteq> f (assmt(update := \<not>assmt update)))"
+definition bf_has_singularity :: "'a boolfunc \<Rightarrow> 'a set \<Rightarrow> bool"
+  where "bf_has_singularity f vs \<equiv> (\<exists>assmt. \<forall>update \<in> vs. f assmt \<noteq> f (assmt(update := \<not>assmt update)))"
+(* for the lack of a better name,
+I'll call that point (assignment) where all changes in assignment change the bf value.
+Might also have called it a plateau *)
 
 definition "all_bdts f vars = {t. ifex_var_set t \<subseteq> vars \<and> val_ifex t = f}"
 (* sanity checks\<dots> *)
@@ -271,16 +274,6 @@ lemma "Falseif \<notin> all_bdts (\<lambda>a. a b) x"
   by (auto dest: fun_cong[where x="\<lambda>_. True"])
 lemma "IF 0 Trueif Falseif \<in> all_bdts (\<lambda>a. a 0) ({0} \<union> x)"
   by(simp add: all_bdts_def; rule ext; simp)
-
-definition "bf_blind f vars \<equiv> \<lambda>assmt. f (\<lambda>v. if v \<in> vars then assmt v else False)"
-lemma "reads_inside_set f vs \<Longrightarrow> bf_blind f vs = f"
-  unfolding bf_blind_def
-  unfolding reads_inside_set_def
-  by force
-  (* guess I don't need bf_blind *)
-
-(* This thing is unusable *)
-definition "bf_significant_vars f \<equiv> \<Inter>{vars. reads_inside_set f vars}"
 
 (* truth table. less smart than mk_ifex, easier to work with. *)
 fun mk_ifex_tt :: "('a :: linorder) boolfunc \<Rightarrow> 'a list \<Rightarrow> 'a ifex" where
@@ -309,9 +302,16 @@ qed
 lemma mk_ifex_tt_all_bdts: "reads_inside_set f (set vs) \<Longrightarrow> mk_ifex_tt f vs \<in> all_bdts f (set vs)"
   unfolding all_bdts_def by simp
 
-definition "bf_evasive_on_alt f vs \<equiv> (let abh = height ` all_bdts f vs; c = card vs in c \<in> abh \<and> (\<forall>h \<in> abh. c \<le> h))"
-(* Using Min makes things weird... *)
-find_theorems "Min (_ :: nat set)" (* like, why are there so few facts on it? *)
+definition "bf_evasive_on f vs \<equiv> (let abh = height ` all_bdts f vs; c = card vs in c \<in> abh \<and> (\<forall>h \<in> abh. c \<le> h))"
+
+lemma all_bdts_nonemp: "finite vs \<Longrightarrow> reads_inside_set f vs \<Longrightarrow> all_bdts f vs \<noteq> {}"
+  by (metis empty_iff finite_sorted_distinct_unique mk_ifex_tt_all_bdts)
+
+find_theorems "Min _ :: 'a :: linorder"
+lemma bf_evasive_on_alt: "reads_inside_set f vs \<Longrightarrow> finite vs \<Longrightarrow> bf_evasive_on f vs \<longleftrightarrow> card vs = Min (height ` all_bdts f vs)"
+apply(simp add: bf_evasive_on_def image_iff)
+  apply(subst eq_Min_iff)
+  oops
 
 fun ifex_vartrail where
 "ifex_vartrail (IF v t e) a = v # ifex_vartrail (if a v then t else e) a" |
@@ -323,14 +323,14 @@ lemma ifex_vartrail: "p \<notin> set (ifex_vartrail f as) \<Longrightarrow> val_
 lemma ifex_vartrail_subset: "set (ifex_vartrail f as) \<subseteq> ifex_var_set f"
   by(induction f) auto
 
-lemma bf_evasive_alt:
+lemma bf_singularity_evasive:
   assumes fin: "finite vs" 
   assumes rin: "reads_inside_set f vs"
-  shows "bf_evasive_on f vs \<longleftrightarrow> bf_evasive_on_alt f vs"
-proof
-  assume "bf_evasive_on f vs"
-  then obtain a where a: "\<And>p. p \<in> vs \<Longrightarrow> f a \<noteq> f (a(p := \<not>a p))" 
-    unfolding bf_evasive_on_def by blast
+  assumes sin: "bf_has_singularity f vs"
+  shows "bf_evasive_on f vs"
+proof -
+  from sin obtain a where a: "\<And>p. p \<in> vs \<Longrightarrow> f a \<noteq> f (a(p := \<not>a p))" 
+    unfolding bf_has_singularity_def by blast
 
   obtain lvs where lvs: "set lvs = vs" "length lvs = card vs"
     by (metis fin finite_sorted_distinct_unique length_remdups_card_conv set_remdups)
@@ -353,16 +353,278 @@ proof
     show False by simp
   qed
     
-  from isin ismin show "bf_evasive_on_alt f vs" 
-    unfolding bf_evasive_on_alt_def Let_def
+  from isin ismin show "bf_evasive_on f vs" 
+    unfolding bf_evasive_on_def Let_def
     by simp
+qed
+
+primrec reads_inside_list where
+"reads_inside_list f [] = (f = bf_False \<or> f = bf_True)" |
+"reads_inside_list f (v#vs) = (reads_inside_list (bf_restrict v True f) vs \<and> reads_inside_list (bf_restrict v False f) vs)"
+
+lemma reads_inside_set_list[simp]: "reads_inside_list f vs = reads_inside_set f (set vs)"
+proof(induction vs arbitrary: f)
+  case Nil
+  then show ?case by(simp add: reads_inside_set_def; fast)
 next
-  assume rhs: "bf_evasive_on_alt f vs"
-  from rhs have ismin: "\<forall>t \<in> all_bdts f vs. card vs \<le> height t" unfolding bf_evasive_on_alt_def by simp
-  from rhs have isin: "\<exists>x\<in>all_bdts f vs. card vs = height x" unfolding bf_evasive_on_alt_def by auto
-  show "bf_evasive_on f vs"
-  oops
-  
+  case (Cons a vs)
+  have b: "reads_inside_set f (insert a (set vs)) \<Longrightarrow> reads_inside_set (bf_restrict a u f) (set vs)" for u
+    by (metis Diff_insert_absorb insert_Diff_single insert_absorb reads_inside_set_restrict reads_inside_set_subset remove_def subset_insertI)
+  have a: "reads_inside_set (bf_restrict a True f) (set vs) \<Longrightarrow>
+           reads_inside_set (bf_restrict a False f) (set vs) \<Longrightarrow>
+    reads_inside_set f (insert a (set vs))"
+    apply (simp add: reads_inside_set_def bf_restrict_def)
+    apply (smt (verit, best) fun_upd_triv)
+    done
+  from Cons show ?case using a b by force
+qed
+
+lemma bf_evasive_on_empty: "bf_evasive_on f {} \<longleftrightarrow> (f = bf_False \<or> f = bf_True)"
+proof -
+  have 1:" \<And>x. ifex_vars x = [] \<Longrightarrow> height x = 0 \<Longrightarrow> f = val_ifex x \<Longrightarrow> val_ifex x = bf_True \<or> val_ifex x = bf_False" 
+    by (metis nonempty_if_var_set val_ifex.elims(2) val_ifex.simps(1))
+  have 2: "f = bf_False \<Longrightarrow> \<exists>x. ifex_vars x = [] \<and> val_ifex x = bf_False \<and> height x = 0" 
+    by (metis height.simps(2) ifex_vars.simps(3) val_ifex.simps(2))
+  have 3: "f = bf_True \<Longrightarrow> \<exists>x. ifex_vars x = [] \<and> val_ifex x = bf_True \<and> height x = 0" 
+    by (metis height.simps(1) ifex_vars.simps(2) val_ifex.simps(1))
+  from 1 2 3 show ?thesis
+    by(auto simp add: bf_evasive_on_def all_bdts_def image_iff)
+qed
+
+fun bf_evasive_list where
+"bf_evasive_list f [] = (f = bf_False \<or> f = bf_True)" |
+"bf_evasive_list f vs = (f \<noteq> bf_False \<and> f \<noteq> bf_True \<and> (\<forall>v \<in> set vs. \<exists>u. bf_evasive_list (bf_restrict v u f) (removeAll v vs)))"
+declare bf_evasive_list.simps(2)[simp del]
+
+lemma bf_evasive_list_alt: "
+bf_evasive_list f vs = (if f = bf_False \<or> f = bf_True then vs = [] else (vs \<noteq> [] \<and> (\<forall>v \<in> set vs. \<exists>u. bf_evasive_list (bf_restrict v u f) (removeAll v vs))))
+"
+  apply(cases vs)
+   apply(simp)
+  apply clarify
+  apply (subst bf_evasive_list.simps)
+  apply simp
+  done
+
+lemma bf_evasive_list_order: "set a = set b \<Longrightarrow> bf_evasive_list f a \<longleftrightarrow> bf_evasive_list f b"
+proof(induction "card (set a)" arbitrary: a b f rule: less_induct)
+  case (less a b)
+  then show ?case proof (cases "a = []")
+    case True
+    then show ?thesis using \<open>set a = set b\<close> by simp
+  next
+    case False
+    with \<open>set a = set b\<close> obtain b1 bs a1 as where 11[simp]: "b = b1 # bs" "a = a1 # as" "set (a1 # as) = set (b1 # bs)"
+      by (metis neq_Nil_conv set_empty2)
+    have m: "v \<in> set b \<Longrightarrow> bf_evasive_list (bf_restrict v u f) (removeAll v a) 
+       = bf_evasive_list (bf_restrict v u f) (removeAll v b)" for v u
+      apply(rule less(1))
+       apply(metis "11" List.finite_set card_Diff1_less set_removeAll)
+      apply(metis less.prems set_removeAll)
+      done
+    show ?thesis
+      by (metis "11"(1) "11"(2) bf_evasive_list.simps(2) less.prems m)
+  qed
+qed
+
+fun bf_evasiveness_list where
+"bf_evasiveness_list f vs = (if f = bf_False \<or> f = bf_True \<or> vs = [] then 0
+  else Suc (min_list (map (\<lambda>v. max 
+    (bf_evasiveness_list (bf_restrict v True f) (removeAll v vs))
+    (bf_evasiveness_list (bf_restrict v False f) (removeAll v vs))
+  ) vs)))" 
+declare  bf_evasiveness_list.simps[simp del]
+lemma bf_evasigness_list_emp_simp[simp]: "bf_evasiveness_list f [] = 0"
+  by (simp add: bf_evasiveness_list.simps)
+
+(* I don't want to work with Some/None in bf_evasiveness_list.
+Instead, an evasiveness of \<open>length vs\<close> might mean that f is either a constant
+or that it doesn't read in vs *)
+lemma "\<not>reads_inside_set f (set vs) \<Longrightarrow> distinct vs \<Longrightarrow> bf_evasiveness_list f vs = length vs"
+  apply(induction "length vs" arbitrary: f vs)
+   apply simp
+  apply(subst bf_evasiveness_list.simps)
+  oops (* ah you know what? convince yourself... sorreh. *)  
+
+lemma min_list_ex: "vs \<noteq> [] \<Longrightarrow> \<exists>v \<in> set vs. min_list (map f vs) = f v"
+  by (induction vs; simp add: list.case_eq_if min_def)
+
+lemma bf_evasive_ness_list: "reads_inside_list f vs \<Longrightarrow> distinct vs \<Longrightarrow> bf_evasive_list f vs \<longleftrightarrow> bf_evasiveness_list f vs = length vs"
+proof(induction "length vs" arbitrary: f vs)
+  case 0
+  then show ?case using reads_inside_list.simps(1) by (auto simp add: bf_evasiveness_list.simps)
+next
+  case (Suc x)
+  hence nemp[simp]: "vs \<noteq> []" by force
+  then show ?case proof(cases "f = bf_False \<or> f = bf_True")
+    case True
+    then show ?thesis
+      by (metis Suc.hyps(2) bf_evasive_list.elims(2) nemp old.nat.distinct(2) bf_evasiveness_list.simps)
+  next
+    have lrm: "va \<in> set vs \<Longrightarrow> x = length (removeAll va vs)" for va
+      using Suc.hyps(2) Suc.prems(2)
+      by (metis One_nat_def diff_Suc_Suc diff_zero distinct_remove1_removeAll length_remove1)
+    case False
+    hence nt[simp]: "f \<noteq> bf_False" "f \<noteq> bf_True" by simp_all
+    obtain v where v: "min_list (map
+                   (\<lambda>v. max (bf_evasiveness_list (bf_restrict v True f) (removeAll v vs))
+                            (bf_evasiveness_list (bf_restrict v False f) (removeAll v vs))
+                   ) vs) = max (bf_evasiveness_list (bf_restrict v True f) (removeAll v vs))
+                               (bf_evasiveness_list (bf_restrict v False f) (removeAll v vs))" "v \<in> set vs"
+      using nemp min_list_ex by blast
+    have iph2: "reads_inside_list (bf_restrict v t f) (removeAll v vs)" for t v
+      by (metis Suc.prems(1) reads_inside_set_list reads_inside_set_restrict remove_code(1))
+    have iph3: "distinct (removeAll v vs)" for v
+      using Suc.prems(2) by (simp add: distinct_removeAll)
+    thm Suc.hyps(*
+    have IH: "(bf_evasiveness_list (bf_restrict v ?t f) (removeAll v vs) = length (removeAll v vs)) =
+      (\<forall>v. bf_evasive_list (bf_restrict v ?t f) (removeAll v vs))"
+    show ?thesis
+    proof 
+      assume "bf_evasive_list f vs" 
+      show "bf_evasiveness_list f vs = length vs"
+        
+        sorry
+    next
+      assume "bf_evasiveness_list f vs = length vs"
+      hence "va \<in> set vs \<Longrightarrow> bf_evasiveness_list (bf_restrict v True  f) (removeAll v vs) = length (removeAll v vs) \<or>
+                             bf_evasiveness_list (bf_restrict v False f) (removeAll v vs) = length (removeAll v vs)" for va
+        apply(subst (asm) bf_evasiveness_list.simps)
+        apply(subst (asm) v)
+        apply(clarsimp simp add: max_def split: if_splits)
+         apply (metis Suc.hyps(2) Suc_inject lrm v(2))
+        apply (metis Suc.hyps(2) Suc_inject lrm v(2))
+        done
+(*      have "va \<in> set vs \<Longrightarrow> Suc x = length vs \<Longrightarrow> x = length (removeAll *)
+      then show "bf_evasive_list f vs" 
+        apply(subst bf_evasive_list_alt)
+        apply(clarsimp)
+        apply(subst ex_bool_eq)
+        thm IH
+        apply(subst (asm) IH; (simp add: v)?)+
+        
+        oops
+        
+      sorry
+  qed
+
+qed*)oops
+
+
+lemma bf_evasive_ol:
+  assumes rin: "reads_inside_set f (set vs)"
+  shows "bf_evasive_on f (set vs) \<longleftrightarrow> bf_evasive_list f vs" (is "?lhs \<longleftrightarrow> ?rhs")
+proof 
+(*  assume ?lhs
+  then show ?rhs sorry
+next *)
+  assume ?rhs
+  then show ?lhs
+  proof(induction "card (set vs)" arbitrary: f vs)
+    case 0 thus ?case by (simp add: bf_evasive_on_empty)
+  next
+    case (Suc x)
+    hence nemp: "vs \<noteq> []" by auto
+    have m: "\<forall>v\<in>set vs. \<exists>u. bf_evasive_list (bf_restrict v u f) (removeAll v vs)" "f \<noteq> bf_False" "f \<noteq> bf_True"
+      by(insert \<open>bf_evasive_list f vs\<close>; subst (asm) bf_evasive_list_alt; simp split: if_splits add: bf_evasive_on_empty nemp)+
+    from Suc.hyps have "v \<in> set vs \<Longrightarrow> x = card (set (removeAll v vs))" for v by simp
+    from Suc.hyps(1)[OF this] m have "\<forall>v\<in>set vs. \<exists>u. bf_evasive_on (bf_restrict v u f) (set (removeAll v vs))" by blast
+    thus ?case
+      unfolding bf_evasive_on_def Let_def image_iff ball_simps
+(* I've seen arguments like this, but I find them difficult... giving up. *)
+      oops
+
+(*I'd like a definition of evasive_on with Min *)
+
+lemma height_limited_finite:
+  assumes fvs: "finite vs"
+  shows "finite {x. ifex_var_set x \<subseteq> vs \<and> height (x :: ('a :: linorder) ifex) \<le> l}"
+proof(induction l)
+  case 0
+  have "height x \<le> 0 \<Longrightarrow> x : {Trueif , Falseif}" for x :: "'a ifex"
+    using height.elims by auto
+  then show ?case
+    by (metis (no_types, lifting) finite.simps finite_subset mem_Collect_eq subsetI)
+next
+  from fvs have fex: "finite x \<Longrightarrow> finite {i. \<exists>v \<in> vs. \<exists>t \<in> x. \<exists>e \<in> x. i = IF v t e}" for x
+    by(induction vs; simp) (* O_O *)
+  (*have SucH: "height x = Suc l \<longleftrightarrow> (\<exists>v t e. max (height t) (height e) = l \<and> x = IF v t e)" for x :: "'a ifex" 
+    by(cases x; simp)*)
+  case (Suc l)
+  note IH = Suc.IH[OF Suc.prems]
+  have e2: "finite {x. ifex_var_set x \<subseteq> vs \<and> (\<exists>v t e. height t \<le> l \<and> height e \<le> l \<and> x = IF v t e)}"
+    by(rule finite_subset[OF _ fex[OF IH]]; rule subsetI) clarsimp
+  have e1: "finite {x. ifex_var_set x \<subseteq> vs \<and> (\<exists>v t e. max (height t) (height e) = l \<and> x = IF v t e)}"
+    by(rule finite_subset[OF _ e2]; rule subsetI) clarsimp
+  have e: "finite {x. ifex_var_set x \<subseteq> vs \<and> height x = Suc l}"
+    apply(rule finite_subset[OF _ e1]; rule subsetI)
+    subgoal for x by(cases x; simp)
+    done
+  have split: "{x. ifex_var_set x \<subseteq> vs \<and> height x \<le> Suc l} =
+        {x. ifex_var_set x \<subseteq> vs \<and> height x \<le> l} \<union> 
+        {x. ifex_var_set x \<subseteq> vs \<and> height x = Suc l}"
+    by fastforce
+  show ?case
+    unfolding split using IH e by simp
+qed
+
+lemma all_bdts_emp: "all_bdts f {} = (if f = bf_False then {Falseif} else if f = bf_True then {Trueif} else {})"
+  apply clarsimp
+  apply(intro conjI impI)
+  subgoal by (clarsimp;fail)
+  subgoal
+    apply(subst set_eq_iff)
+    apply(clarsimp simp add: all_bdts_def)
+    subgoal for x by(cases x; simp; meson val_ifex.simps)
+    done
+  subgoal
+    apply(subst set_eq_iff)
+    apply(clarsimp simp add: all_bdts_def)
+    subgoal for x by(cases x; simp; meson val_ifex.simps)
+    done
+  subgoal
+    apply(subst set_eq_iff)
+    apply(clarsimp simp add: all_bdts_def)
+    subgoal for x by(cases x; simp; meson val_ifex.simps)
+    done
+  done
+lemma reading_witness: "t \<in> all_bdts f vs \<Longrightarrow> reads_inside_set f vs"
+  by(induction t arbitrary: f vs; simp add: reads_inside_set_def all_bdts_def; force)
+
+lemma reads_inside_set_alt: "finite vs \<Longrightarrow> reads_inside_set f vs \<longleftrightarrow> all_bdts f vs \<noteq> {}"
+  by (meson all_bdts_nonemp all_not_in_conv reading_witness)
+
+lemma bf_evasive_on_alt: assumes fin: "finite vs" shows "bf_evasive_on f vs \<longleftrightarrow> (reads_inside_set f vs \<and> card vs = Min {h \<in> height ` all_bdts f vs. h \<le> card vs})"
+proof(cases "reads_inside_set f vs")
+  from fin obtain vl where vl: "vs = set vl" "length vl = card vs"
+    by (metis sorted_list_of_set.finite_set_strict_sorted)
+  case True
+  then show ?thesis  
+    apply(subst eq_Min_iff)
+    subgoal by fast
+    subgoal
+      apply(simp)
+      apply(rule bexI[where x = "mk_ifex_tt f vl"])
+       apply(simp add: vl; fail)
+      apply (simp add: mk_ifex_tt_all_bdts vl)
+      done 
+    apply(auto simp add: bf_evasive_on_def)
+    done
+next
+  case False
+  hence "\<not>bf_evasive_on f vs" by(clarsimp simp add: bf_evasive_on_def reads_inside_set_alt[OF fin])
+  with False show ?thesis by simp
+qed
+
+definition "bf_blind f vars \<equiv> \<lambda>assmt. f (\<lambda>v. if v \<in> vars then assmt v else False)"
+lemma "reads_inside_set f vs \<Longrightarrow> bf_blind f vs = f"
+  unfolding bf_blind_def
+  unfolding reads_inside_set_def
+  by force
+  (* guess I don't need bf_blind *)
+
+(* This thing is unusable *)
+definition "bf_significant_vars f \<equiv> \<Inter>{vars. reads_inside_set f vars}"
 
 
 (*definition evasive :: "nat => ((nat => bool) => bool) => bool"
